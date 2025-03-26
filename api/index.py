@@ -76,6 +76,10 @@ def analyze_text_with_together_ai(text, prompt, language):
             'source': 'Together AI API'
         }
 
+@app.route('/')
+def home():
+    return 'Hello, World!'
+
 @app.route('/analyze-text', methods=['POST'])
 def analyze_text():
     """
