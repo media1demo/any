@@ -1,125 +1,160 @@
-import os
-import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from together import Together
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "allow_headers": "*"}})
 
-# Together AI API Configuration
-TOGETHER_API_KEY = '07589fb47c69da2f5af8b4ecdee9b843614c5f76605e1706b1af22ea1dd728cd'
-TOGETHER_API_ENDPOINT = 'https://api.together.xyz/v1/chat/completions'
+@app.route('/generate-code', methods=['POST'])
+def generate_code():
 
-def analyze_text_with_together_ai(text, prompt, language):
+    # Get the request data
+    data = request.json
+
+    language = data.get('language', 'js')
+    html_code = data.get('htmlCode', '')
+    css_code = data.get('cssCode', '')
+    js_code = data.get('jsCode', '')
+    user_prompt = data.get('prompt', 'Enhance this code with best practices and optimizations')
+
+    # Initialize the Together API client
+    client = Together(api_key="07589fb47c69da2f5af8b4ecdee9b843614c5f76605e1706b1af22ea1dd728cd")
+
+    # Create the prompt based on the language
+    system_prompt = "You are a helpful coding assistant that provides enhanced code."
+
+    prompt_content = f"""Enhance this {language.upper()} code. No external images and no external links.
+    Everything should be in one worker code. Create your own SVGs and provide the full code.
+
+    Current HTML: {html_code}
+    Current CSS: {css_code}
+    Current JS: {js_code}
+
+    User instructions: {user_prompt}
+
+    Please improve the {language.upper()} code specifically.
+    Only return the improved code without explanations or markdown formatting.
     """
-    Analyze text using Together AI API
-    
-    Args:
-        text (str): The text or code to analyze
-        prompt (str, optional): Custom prompt for analysis
-        language (str, optional): Programming language or text type
-    
-    Returns:
-        dict: Analysis results
-    """
+
+    # Call the Together API
+    response = client.chat.completions.create(
+        model="deepseek-ai/DeepSeek-V3",
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": prompt_content
+            }
+        ],
+        max_tokens=5576,
+        temperature=0.7,
+        top_p=0.7,
+        top_k=50,
+        repetition_penalty=1,
+        stop=["<｜end▁of▁sentence｜>"],
+        stream=True
+    )
+
+    # Process the response
+    collected_output = ""
+    code_content = ""
+    is_inside_code_block = False
+
+    for chunk in response:
+        if hasattr(chunk, 'choices') and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            collected_output += content
+
+            # Check for code block markers
+            if '```' in content:
+                parts = content.split('```')
+                for i in range(len(parts)):
+                    if i % 2 == 1:  # Inside code block
+                        code_content += parts[i].strip(language + '\n')
+                    elif is_inside_code_block:  # End of a code block
+                        code_content += parts[i]
+                        is_inside_code_block = False
+            elif is_inside_code_block:
+                code_content += content
+
+    # Extract code if the model returned it with markdown formatting
+    if '```' in collected_output:
+        # Try to extract code between code blocks
+        code_blocks = collected_output.split('```')
+        for i in range(1, len(code_blocks), 2):
+            block = code_blocks[i]
+            if block.startswith(language) or block.startswith(language.lower()):
+                code_content = block.replace(language, '', 1).replace(language.lower(), '', 1).strip()
+                break
+        if not code_content:
+            code_content = collected_output
+    else:
+        # No code blocks, just return the entire output
+        code_content = collected_output
+
+    app.logger.info("API call completed")
+
+    # Return the collected output
+    return jsonify({
+        'generatedCode': code_content,
+        'language': language
+    })
+
+client = Together(api_key="07589fb47c69da2f5af8b4ecdee9b843614c5f76605e1706b1af22ea1dd728cd")
+
+@app.route('/analyze-text', methods=['POST', 'OPTIONS'])
+def analyze_text():
+    user_prompt = request.get('prompt', 'Analyze this code and provide recommendations')
+
+    # Add a system prompt to guide the analysis
+    system_prompt = "You are a helpful code analysis assistant. Provide me meaning other such exmaples."
+
     try:
-        # Construct the full prompt if not provided
-        if not prompt:
-            prompt = f"Analyze this {language} code: \"{text}\"\n\nProvide a comprehensive analysis of the code."
-        
-        # Prepare API request payload
-        payload = {
-            "model": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-            "messages": [
+        # Call the Together API
+        response = client.chat.completions.create(
+            model="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+            messages=[
                 {
                     "role": "system",
-                    "content": "You are a helpful code and text analysis assistant."
+                    "content": system_prompt
                 },
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": user_prompt  # Use the actual user prompt
                 }
             ],
-            "max_tokens": 4096,
-            "temperature": 0.7,
-            "top_p": 0.7,
-            "top_k": 50,
-            "repetition_penalty": 1.0,
-            "stop": ["<｜end▁of▁sentence｜>"],
-            "stream": False
-        }
-        
-        # Headers for API request
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {TOGETHER_API_KEY}'
-        }
-        
-        # Make API request
-        response = requests.post(TOGETHER_API_ENDPOINT, json=payload, headers=headers)
-        response.raise_for_status()
-        
-        # Extract analysis from API response
-        result = response.json()
-        analysis = result['choices'][0]['message']['content']
-        
-        return {
-            'status': 'success',
-            'analysis': analysis,
-            'source': 'Together AI API'
-        }
-    
-    except requests.RequestException as e:
-        return {
-            'status': 'error',
-            'message': f'API request failed: {str(e)}',
-            'source': 'Together AI API'
-        }
+            max_tokens=4096,
+            temperature=0.7,
+            top_p=0.7,
+            top_k=50,
+            repetition_penalty=1,
+            stop=["<｜end▁of▁sentence｜>"],
+            stream=False
+        )
 
-@app.route('/')
-def home():
-    return 'Hello, World!'
+        # Extract analysis from the response
+        analysis = response.choices[0].message.content if response.choices else "No analysis available"
 
-@app.route('/analyze-text', methods=['POST'])
-def analyze_text():
-    """
-    Flask route to handle text analysis requests
-    """
-    try:
-        # Get request data
-        data = request.json
-        text = data.get('text', '')
-        prompt = data.get('prompt', '')
-        language = data.get('language', 'unknown')
-        
-        # Validate input
-        if not text:
-            return jsonify({
-                'status': 'error', 
-                'message': 'No text provided for analysis'
-            }), 400
-        
-        # Perform analysis
-        result = analyze_text_with_together_ai(text, prompt, language)
-        
-        return jsonify(result)
-    
+        # Return the analysis with CORS headers
+        response = jsonify({
+            'analysis': analysis
+        })
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response
+
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Internal server error: {str(e)}'
-        }), 500
+        # Log the full error for debugging
 
-# Optional: Fallback mock analysis for testing
-def mock_analyze_text(text, prompt=None, language=None):
-    """
-    Provide a mock analysis when API fails
-    """
-    return {
-        'status': 'mock',
-        'analysis': f"Mock analysis for {language} text:\n\n"
-                    f"Text preview: {text[:100]}...\n\n"
-                    "Note: This is a mock analysis due to API failure.",
-        'source': 'Mock Fallback'
-    }
+        return jsonify({'error': 'Analysis failed', 'details': str(e)}), 500
 
+
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    return jsonify({"status": "ok", "message": "Server is running"})
+
+if __name__ == '__main__':
+    app.run()
